@@ -1,4 +1,4 @@
-#!/usr/bin/env -S uv run
+#!/usr/bin/env -S uv run -q
 # /// script
 # requires-python = ">=3.13"
 # dependencies = [
@@ -393,29 +393,236 @@ def parse_args():
         prog="fastvm",
         description="Fast VM provisioning with cloud images",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-examples:
-  fastvm debian                    # Use debian with default arch
-  fastvm fedora arm64              # Use fedora with arm64 architecture  
-  fastvm debian amd64 localvm01    # Use debian, amd64 arch, hostname localvm01
-        """,
     )
 
-    parser.add_argument(
+    subparsers = parser.add_subparsers(
+        dest="command", 
+        help="Available commands",
+        required=True
+    )
+
+    # Run subcommand
+    run_parser = subparsers.add_parser(
+        "run",
+        help="Run a new VM",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+examples:
+  fastvm run debian                    # Use debian with default arch
+  fastvm run fedora arm64              # Use fedora with arm64 architecture  
+  fastvm run debian amd64 localvm01    # Use debian, amd64 arch, hostname localvm01
+        """,
+    )
+    run_parser.add_argument(
         "distro", choices=list(IMAGES.keys()), help="Distribution to use"
     )
-    parser.add_argument(
+    run_parser.add_argument(
         "arch", nargs="?", default="amd64", help="Architecture (default: amd64)"
     )
-    parser.add_argument("hostname", nargs="?", help="Hostname for the VM")
+    run_parser.add_argument("hostname", nargs="?", help="Hostname for the VM")
+
+    # PS subcommand
+    ps_parser = subparsers.add_parser(
+        "ps",
+        help="List running fastvm VMs"
+    )
+
+    # LS subcommand  
+    ls_parser = subparsers.add_parser(
+        "ls",
+        help="List all fastvm VMs (running and stopped)"
+    )
+
+    # RM subcommand
+    rm_parser = subparsers.add_parser(
+        "rm",
+        help="Delete a fastvm VM"
+    )
+    rm_parser.add_argument(
+        "vm_name",
+        help="Name of the VM to delete (use 'fastvm ls' to see available VMs)"
+    )
+    rm_parser.add_argument(
+        "-f", "--force",
+        action="store_true",
+        help="Force deletion without confirmation"
+    )
 
     return parser.parse_args()
 
 
-def main():
-    print("fastvm version v0.1")
-    args = parse_args()
+def get_all_vms():
+    """Get list of all fastvm VMs by scanning data directory."""
+    data_dir = get_data_dir()
+    vm_files = list(data_dir.glob("*.qcow2"))
+    vms = []
+    
+    for vm_file in vm_files:
+        vm_name = vm_file.stem  # Remove .qcow2 extension
+        # Skip cloud-init server directories
+        if not vm_name.endswith("-cloud-init-server"):
+            vms.append(vm_name)
+    
+    return sorted(vms)
 
+
+def is_vm_running(vm_name):
+    """Check if a VM is currently running by checking for monitor socket and process."""
+    monitor_socket = f"/tmp/qemu-monitor-{vm_name}.sock"
+    
+    # Check if monitor socket exists
+    if not os.path.exists(monitor_socket):
+        return False, None
+    
+    # Try to find QEMU process by searching for VM name in process list
+    try:
+        result = subprocess.run(
+            ["pgrep", "-f", f"qemu.*{vm_name}"],
+            capture_output=True,
+            text=True
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            pids = result.stdout.strip().split('\n')
+            return True, pids[0]  # Return first PID found
+    except Exception:
+        pass
+    
+    return False, None
+
+
+def get_vm_ssh_port(vm_name):
+    """Try to extract SSH port from running QEMU process command line."""
+    try:
+        # Get the full command line for the QEMU process
+        result = subprocess.run(
+            ["pgrep", "-f", "-a", f"qemu.*{vm_name}"],
+            capture_output=True,
+            text=True
+        )
+        if result.returncode == 0:
+            # Parse the command line to find hostfwd port
+            for line in result.stdout.split('\n'):
+                if "hostfwd=tcp" in line:
+                    import re
+                    match = re.search(r'hostfwd=tcp::(\d+)-:22', line)
+                    if match:
+                        return int(match.group(1))
+    except Exception:
+        pass
+    return None
+
+
+def list_vms():
+    """List all fastvm VMs with their status."""
+    vms = get_all_vms()
+    if not vms:
+        print("No fastvm VMs found.")
+        return
+    
+    print(f"{'VM NAME':<30} {'STATUS':<10} {'PID':<8} {'SSH PORT':<10}")
+    print("-" * 60)
+    
+    for vm_name in vms:
+        running, pid = is_vm_running(vm_name)
+        if running:
+            ssh_port = get_vm_ssh_port(vm_name)
+            port_str = str(ssh_port) if ssh_port else "N/A"
+            print(f"{vm_name:<30} {'RUNNING':<10} {pid:<8} {port_str:<10}")
+        else:
+            print(f"{vm_name:<30} {'STOPPED':<10} {'-':<8} {'-':<10}")
+
+
+def list_running_vms():
+    """List only running fastvm VMs."""
+    vms = get_all_vms()
+    running_vms = []
+    
+    for vm_name in vms:
+        running, pid = is_vm_running(vm_name)
+        if running:
+            ssh_port = get_vm_ssh_port(vm_name)
+            running_vms.append((vm_name, pid, ssh_port))
+    
+    if not running_vms:
+        print("No running fastvm VMs found.")
+        return
+    
+    print(f"{'VM NAME':<30} {'PID':<8} {'SSH PORT':<10}")
+    print("-" * 50)
+    
+    for vm_name, pid, ssh_port in running_vms:
+        port_str = str(ssh_port) if ssh_port else "N/A"
+        print(f"{vm_name:<30} {pid:<8} {port_str:<10}")
+
+
+def delete_vm(vm_name, force=False):
+    """Delete a fastvm VM and associated files."""
+    data_dir = get_data_dir()
+    vm_file = data_dir / f"{vm_name}.qcow2"
+    cloud_init_dir = data_dir / f"{vm_name}-cloud-init-server"
+    
+    # Check if VM exists
+    if not vm_file.exists():
+        print(f"Error: VM '{vm_name}' not found.")
+        return False
+    
+    # Check if VM is running
+    running, pid = is_vm_running(vm_name)
+    if running:
+        if not force:
+            response = input(f"VM '{vm_name}' is currently running (PID: {pid}). Stop and delete it? (y/N): ")
+            if response.lower() not in ['y', 'yes']:
+                print("Deletion cancelled.")
+                return False
+        
+        # Stop the VM
+        try:
+            print(f"Stopping VM '{vm_name}' (PID: {pid})...")
+            os.kill(int(pid), 15)  # SIGTERM
+            time.sleep(2)
+            
+            # Check if process is still running, force kill if necessary
+            if is_vm_running(vm_name)[0]:
+                print("Force killing VM...")
+                os.kill(int(pid), 9)  # SIGKILL
+                time.sleep(1)
+        except Exception as e:
+            print(f"Warning: Could not stop VM process: {e}")
+    
+    # Ask for confirmation if not forced
+    if not force:
+        response = input(f"Delete VM '{vm_name}' and all associated files? (y/N): ")
+        if response.lower() not in ['y', 'yes']:
+            print("Deletion cancelled.")
+            return False
+    
+    # Delete files
+    try:
+        print(f"Deleting VM files...")
+        if vm_file.exists():
+            vm_file.unlink()
+            print(f"Deleted: {vm_file}")
+        
+        if cloud_init_dir.exists():
+            shutil.rmtree(cloud_init_dir)
+            print(f"Deleted: {cloud_init_dir}")
+        
+        # Clean up monitor socket
+        monitor_socket = f"/tmp/qemu-monitor-{vm_name}.sock"
+        if os.path.exists(monitor_socket):
+            os.unlink(monitor_socket)
+            print(f"Cleaned up monitor socket: {monitor_socket}")
+        
+        print(f"VM '{vm_name}' deleted successfully.")
+        return True
+        
+    except Exception as e:
+        print(f"Error deleting VM: {e}")
+        return False
+
+
+def run_vm_command(args):
+    """Handle the 'run' subcommand to start a new VM."""
     print(f"Selected distro: {args.distro}")
     print(f"Architecture: {args.arch}")
 
@@ -475,6 +682,26 @@ def main():
     if run_vm(qemu_cmd, vm_name, ssh_port, cloud_init_server):
         return 0
     else:
+        return 1
+
+
+def main():
+    print("fastvm version v0.1")
+    args = parse_args()
+
+    if args.command == "run":
+        return run_vm_command(args)
+    elif args.command == "ps":
+        list_running_vms()
+        return 0
+    elif args.command == "ls":
+        list_vms()
+        return 0
+    elif args.command == "rm":
+        success = delete_vm(args.vm_name, args.force)
+        return 0 if success else 1
+    else:
+        print(f"Unknown command: {args.command}")
         return 1
 
 

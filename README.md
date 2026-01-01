@@ -14,6 +14,44 @@ root@3710524c2a6d:/#
 
 ```
 # VMs should be as simple as this:
-$ fastvm debian
+$ fastvm run debian
 root@693220a919f6:/#
+```
+
+
+## Usage:
+
+```
+$ ./fastvm.py -h
+fastvm version v0.1
+usage: fastvm [-h] {run,ps,ls,rm} ...
+
+Fast VM provisioning with cloud images
+
+positional arguments:
+  {run,ps,ls,rm}  Available commands
+    run           Run a new VM
+    ps            List running fastvm VMs
+    ls            List all fastvm VMs (running and stopped)
+    rm            Delete a fastvm VM
+
+options:
+  -h, --help      show this help message and exit
+
+$ ./fastvm.py run -h
+fastvm version v0.1
+usage: fastvm run [-h] {arch,fedora,debian} [arch] [hostname]
+
+positional arguments:
+  {arch,fedora,debian}  Distribution to use
+  arch                  Architecture (default: amd64)
+  hostname              Hostname for the VM
+
+options:
+  -h, --help            show this help message and exit
+
+examples:
+  fastvm run debian                    # Use debian with default arch
+  fastvm run fedora arm64              # Use fedora with arm64 architecture  
+  fastvm run debian amd64 localvm01    # Use debian, amd64 arch, hostname localvm01
 ```
