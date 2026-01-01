@@ -14,6 +14,7 @@ import re
 import shutil
 import socket
 import subprocess
+import time
 import yaml
 from pathlib import Path
 from urllib.parse import urlparse
@@ -22,7 +23,6 @@ from glob import glob
 import requests
 
 # TODO:
-# TODO: Use cloud-init to configure ssh-keys and ssh https://cloudinit.readthedocs.io/en/latest/tutorial/qemu.html
 # TODO: More images: ubuntu, freebsd, openbsd, helios, etc
 # TODO: hash verification
 
@@ -246,7 +246,8 @@ def get_qemu_command(arch, vm_image_path, vm_name, cloud_init_server_port=None):
         # The VM will access the host's HTTP server via the default gateway (10.0.2.2)
         datasource_url = f"http://10.0.2.2:{cloud_init_server_port}/"
         cmd.extend([
-            f"-smbios type=1,serial=ds='nocloud;s={datasource_url}'"
+            "-smbios",
+            f"type=1,serial=ds='nocloud;s={datasource_url}'"
         ])
 
     # Add KVM if available (but don't fail if not)
@@ -271,14 +272,27 @@ def run_vm(qemu_cmd, vm_name, ssh_port, cloud_init_server=None):
             print(f"Error: {qemu_binary} not found. Please install QEMU.")
             return False
 
-        # Run QEMU in background using Popen
+        # Run QEMU in background using Popen with proper detachment
         process = subprocess.Popen(
             qemu_cmd,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,
             stdin=subprocess.DEVNULL,
             text=True,
+            start_new_session=True,  # Detach from parent process
         )
+
+        # Give the process a moment to start
+        time.sleep(1)
+        
+        # Check if process started successfully
+        poll_result = process.poll()
+        if poll_result is not None:
+            # Process already terminated, get error info
+            stderr_output = process.stderr.read() if process.stderr else "No error output"
+            print(f"Error: QEMU process terminated immediately with exit code {poll_result}")
+            print(f"Error output: {stderr_output}")
+            return False
 
         print(f"VM '{vm_name}' started successfully in the background!")
         print(f"VM Process ID: {process.pid}")
