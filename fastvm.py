@@ -3,6 +3,7 @@
 # requires-python = ">=3.13"
 # dependencies = [
 #     "requests",
+#     "PyYAML",
 # ]
 # ///
 
@@ -11,9 +12,12 @@ import os
 import random
 import re
 import shutil
+import socket
 import subprocess
+import yaml
 from pathlib import Path
 from urllib.parse import urlparse
+from glob import glob
 
 import requests
 
@@ -26,7 +30,10 @@ IMAGES = {
     "arch": {
         "amd64": [
             # basic image with ssh running and user:pw arch:arch
-            "https://gitlab.archlinux.org/archlinux/arch-boxes/-/package_files/10674/download"
+            # "https://gitlab.archlinux.org/archlinux/arch-boxes/-/package_files/10674/download"
+            
+            # cloud-init image:
+            "https://gitlab.archlinux.org/archlinux/arch-boxes/-/package_files/10678/download"
         ]
     },
     "fedora": {
@@ -39,10 +46,12 @@ IMAGES = {
     },
     "debian": {
         "amd64": [
-            "https://cloud.debian.org/images/cloud/sid/daily/latest/debian-sid-nocloud-amd64-daily.qcow2"
+            # "https://cloud.debian.org/images/cloud/sid/daily/latest/debian-sid-nocloud-amd64-daily.qcow2"
+            "https://cloud.debian.org/images/cloud/sid/daily/latest/debian-sid-generic-amd64-daily.qcow2"
         ],
         "arm64": [
-            "https://cloud.debian.org/images/cloud/sid/daily/latest/debian-sid-nocloud-arm64-daily.qcow2"
+            # "https://cloud.debian.org/images/cloud/sid/daily/latest/debian-sid-nocloud-arm64-daily.qcow2"
+            "https://cloud.debian.org/images/cloud/sid/daily/latest/debian-sid-generic-arm64-daily.qcow2"
         ],
     },
 }
@@ -72,6 +81,111 @@ def get_data_dir():
     return data_dir
 
 
+def get_ssh_public_keys():
+    """Get the user's SSH public keys."""
+    ssh_dir = Path.home() / ".ssh"
+    return [open(f,'r').read().strip() for f in glob(str(ssh_dir / "*.pub"))]
+
+
+def create_cloud_init_server(vm_name, data_dir, hostname):
+    """Create cloud-init HTTP server with user-data and meta-data."""
+    server_dir = data_dir / f"{vm_name}-cloud-init-server"
+    
+    # Check if server directory already exists
+    if server_dir.exists():
+        print(f"Cloud-init server directory already exists: {server_dir}")
+    else:
+        server_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Get SSH public key
+    ssh_keys = get_ssh_public_keys()
+    if len(ssh_keys) == 0:
+        print("Warning: No SSH public key found. Creating VM without SSH key setup.")
+        print("To generate an SSH key, run: ssh-keygen -t ed25519")
+    print(f"Using SSH keys: {ssh_keys}...")
+    
+    # Create user-data configuration
+    user_data = {
+        "users": [
+            {
+                "name": "user",
+                "gecos": "Default user",
+                "sudo": "ALL=(ALL) NOPASSWD:ALL",
+                "shell": "/bin/bash",
+                "ssh-authorized-keys": ssh_keys
+            }
+        ],
+        "ssh_pwauth": False,  # Disable password authentication
+        "disable_root": True,
+        "package_update": True,
+        "packages": ["openssh-server"],
+        "runcmd": [
+            "systemctl enable ssh",
+            "systemctl start ssh"
+        ]
+    }
+    
+    # Create meta-data
+    meta_data = {
+        "instance-id": f"fastvm-{vm_name}",
+        "local-hostname": hostname
+    }
+    
+    try:
+        # Write user-data
+        user_data_file = server_dir / "user-data"
+        with open(user_data_file, 'w') as f:
+            f.write("#cloud-config\n")
+            yaml.dump(user_data, f, default_flow_style=False)
+        
+        # Write meta-data  
+        meta_data_file = server_dir / "meta-data"
+        with open(meta_data_file, 'w') as f:
+            yaml.dump(meta_data, f, default_flow_style=False)
+        
+        # Find available port for HTTP server (starting from 8080)
+        port = 8080
+        while port < 8200:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                try:
+                    s.bind(('127.0.0.1', port))
+                    break
+                except OSError:
+                    port += 1
+        else:
+            print("Error: Could not find available port for cloud-init server")
+            return None, None
+        
+        # Start HTTP server in background
+        server_cmd = [
+            "python3", "-m", "http.server", 
+            str(port), 
+            "--bind", "127.0.0.1",
+            "--directory", str(server_dir)
+        ]
+        
+        server_process = subprocess.Popen(
+            server_cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL
+        )
+        
+        print(f"Started cloud-init HTTP server on port {port} (PID: {server_process.pid})")
+        print(f"Server directory: {server_dir}")
+        
+        # Return server info
+        return {
+            'port': port,
+            'process': server_process,
+            'directory': server_dir
+        }, port
+        
+    except Exception as e:
+        print(f"Error creating cloud-init server: {e}")
+        return None, None
+
+
 def create_vm_image(cached_image_path, distro, arch, hostname, data_dir):
     """Create a new VM image by copying the cached image."""
     vm_name = f"{distro}-{arch}-{hostname}"
@@ -91,7 +205,7 @@ def create_vm_image(cached_image_path, distro, arch, hostname, data_dir):
         return None, None
 
 
-def get_qemu_command(arch, vm_image_path, vm_name):
+def get_qemu_command(arch, vm_image_path, vm_name, cloud_init_server_port=None):
     """Generate QEMU command based on architecture."""
     # Architecture to QEMU binary mapping
     qemu_binaries = {
@@ -125,6 +239,15 @@ def get_qemu_command(arch, vm_image_path, vm_name):
         "-serial",
         "stdio",  # Serial console to stdio
     ]
+    
+    # Add cloud-init NoCloud datasource via kernel cmdline if server provided
+    if cloud_init_server_port:
+        # Use NoCloud datasource pointing to our HTTP server
+        # The VM will access the host's HTTP server via the default gateway (10.0.2.2)
+        datasource_url = f"http://10.0.2.2:{cloud_init_server_port}/"
+        cmd.extend([
+            f"-smbios type=1,serial=ds='nocloud;s={datasource_url}'"
+        ])
 
     # Add KVM if available (but don't fail if not)
     if arch in ["amd64", "i386"]:
@@ -137,7 +260,7 @@ def get_qemu_command(arch, vm_image_path, vm_name):
     return cmd, ssh_port
 
 
-def run_vm(qemu_cmd, vm_name, ssh_port):
+def run_vm(qemu_cmd, vm_name, ssh_port, cloud_init_server=None):
     """Run the VM using QEMU command."""
     print(f"Starting VM '{vm_name}' with command: {' '.join(qemu_cmd)}")
 
@@ -158,7 +281,10 @@ def run_vm(qemu_cmd, vm_name, ssh_port):
         )
 
         print(f"VM '{vm_name}' started successfully in the background!")
-        print(f"Process ID: {process.pid}")
+        print(f"VM Process ID: {process.pid}")
+        if cloud_init_server:
+            print(f"Cloud-init Server PID: {cloud_init_server['process'].pid}")
+            print(f"Cloud-init Server Port: {cloud_init_server['port']}")
         print(f"SSH port forwarding: localhost:{ssh_port} -> VM:22")
         print()
         print("Connection methods:")
@@ -166,6 +292,12 @@ def run_vm(qemu_cmd, vm_name, ssh_port):
         print(f"2. QEMU Monitor: socat - UNIX-CONNECT:/tmp/qemu-monitor-{vm_name}.sock")
         print(f"3. Check VM status: ps aux | grep {process.pid}")
         print(f"4. Stop VM: kill {process.pid}")
+        if cloud_init_server:
+            print(f"5. Stop cloud-init server: kill {cloud_init_server['process'].pid}")
+            print(f"6. Cloud-init files: {cloud_init_server['directory']}")
+        print()
+        print("Note: VM may take 1-2 minutes to fully boot and configure SSH via cloud-init.")
+        print("Note: Remember to stop both VM and cloud-init server processes when done.")
         return True
 
     except Exception as e:
@@ -314,11 +446,19 @@ def main():
         print("Failed to create VM image")
         return 1
 
+    # Create cloud-init HTTP server
+    cloud_init_server, server_port = create_cloud_init_server(vm_name, data_dir, hostname)
+    if cloud_init_server:
+        print(f"Cloud-init HTTP server started on port {server_port}")
+    else:
+        print("Warning: Failed to create cloud-init server. VM will start without SSH key setup.")
+        server_port = None
+
     # Generate QEMU command
-    qemu_cmd, ssh_port = get_qemu_command(args.arch, vm_image_path, vm_name)
+    qemu_cmd, ssh_port = get_qemu_command(args.arch, vm_image_path, vm_name, server_port)
 
     # Run the VM
-    if run_vm(qemu_cmd, vm_name, ssh_port):
+    if run_vm(qemu_cmd, vm_name, ssh_port, cloud_init_server):
         return 0
     else:
         return 1
