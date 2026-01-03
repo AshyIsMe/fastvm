@@ -24,6 +24,9 @@ import requests
 
 # TODO:
 # TODO: More images: ubuntu, freebsd, openbsd, helios, etc
+#   - alpine: https://wiki.alpinelinux.org/wiki/Install_Alpine_in_QEMU
+#   - openbsd: https://github.com/hcartiaux/openbsd-cloud-image
+#   - helios: https://github.com/oxidecomputer/helios-engvm
 # TODO: hash verification
 
 IMAGES = {
