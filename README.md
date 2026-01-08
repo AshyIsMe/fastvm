@@ -1,5 +1,7 @@
 # fastvm
 
+## TODO: what can we learn from vagrant?
+
 A simple and fast way to run local VMs with qemu.
 
 Spinning up and running new VMs should be as easy as running a docker container:
@@ -24,16 +26,17 @@ root@693220a919f6:/#
 ```
 $ ./fastvm.py -h
 fastvm version v0.1
-usage: fastvm [-h] {run,ps,ls,rm} ...
+usage: fastvm [-h] {run,ps,ls,rm,update} ...
 
 Fast VM provisioning with cloud images
 
 positional arguments:
-  {run,ps,ls,rm}  Available commands
+  {run,ps,ls,rm,update}  Available commands
     run           Run a new VM
     ps            List running fastvm VMs
     ls            List all fastvm VMs (running and stopped)
     rm            Delete a fastvm VM
+    update        Check for and download updated cloud images
 
 options:
   -h, --help      show this help message and exit
@@ -52,6 +55,12 @@ options:
 
 examples:
   fastvm run debian                    # Use debian with default arch
-  fastvm run fedora arm64              # Use fedora with arm64 architecture  
+  fastvm run fedora arm64              # Use fedora with arm64 architecture
   fastvm run debian amd64 localvm01    # Use debian, amd64 arch, hostname localvm01
+
+$ ./fastvm.py update
+  # Check for newer versions of cloud images
+
+$ ./fastvm.py update --download
+  # Download all available updates and remove old versions
 ```

@@ -34,7 +34,7 @@ IMAGES = {
         "amd64": [
             # basic image with ssh running and user:pw arch:arch
             # "https://gitlab.archlinux.org/archlinux/arch-boxes/-/package_files/10674/download"
-            
+
             # cloud-init image:
             "https://gitlab.archlinux.org/archlinux/arch-boxes/-/package_files/10678/download"
         ]
@@ -93,20 +93,20 @@ def get_ssh_public_keys():
 def create_cloud_init_server(vm_name, data_dir, hostname):
     """Create cloud-init HTTP server with user-data and meta-data."""
     server_dir = data_dir / f"{vm_name}-cloud-init-server"
-    
+
     # Check if server directory already exists
     if server_dir.exists():
         print(f"Cloud-init server directory already exists: {server_dir}")
     else:
         server_dir.mkdir(parents=True, exist_ok=True)
-    
+
     # Get SSH public key
     ssh_keys = get_ssh_public_keys()
     if len(ssh_keys) == 0:
         print("Warning: No SSH public key found. Creating VM without SSH key setup.")
         print("To generate an SSH key, run: ssh-keygen -t ed25519")
     print(f"Using SSH keys: {ssh_keys}...")
-    
+
     # Create user-data configuration
     user_data = {
         "users": [
@@ -127,25 +127,25 @@ def create_cloud_init_server(vm_name, data_dir, hostname):
             "systemctl start ssh"
         ]
     }
-    
+
     # Create meta-data
     meta_data = {
         "instance-id": f"fastvm-{vm_name}",
         "local-hostname": hostname
     }
-    
+
     try:
         # Write user-data
         user_data_file = server_dir / "user-data"
         with open(user_data_file, 'w') as f:
             f.write("#cloud-config\n")
             yaml.dump(user_data, f, default_flow_style=False)
-        
-        # Write meta-data  
+
+        # Write meta-data
         meta_data_file = server_dir / "meta-data"
         with open(meta_data_file, 'w') as f:
             yaml.dump(meta_data, f, default_flow_style=False)
-        
+
         # Find available port for HTTP server (starting from 8080)
         port = 8080
         while port < 8200:
@@ -158,32 +158,32 @@ def create_cloud_init_server(vm_name, data_dir, hostname):
         else:
             print("Error: Could not find available port for cloud-init server")
             return None, None
-        
+
         # Start HTTP server in background
         server_cmd = [
-            "python3", "-m", "http.server", 
-            str(port), 
+            "python3", "-m", "http.server",
+            str(port),
             "--bind", "127.0.0.1",
             "--directory", str(server_dir)
         ]
-        
+
         server_process = subprocess.Popen(
             server_cmd,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             stdin=subprocess.DEVNULL
         )
-        
+
         print(f"Started cloud-init HTTP server on port {port} (PID: {server_process.pid})")
         print(f"Server directory: {server_dir}")
-        
+
         # Return server info
         return {
             'port': port,
             'process': server_process,
             'directory': server_dir
         }, port
-        
+
     except Exception as e:
         print(f"Error creating cloud-init server: {e}")
         return None, None
@@ -242,7 +242,7 @@ def get_qemu_command(arch, vm_image_path, vm_name, cloud_init_server_port=None):
         "-serial",
         "stdio",  # Serial console to stdio
     ]
-    
+
     # Add cloud-init NoCloud datasource via kernel cmdline if server provided
     if cloud_init_server_port:
         # Use NoCloud datasource pointing to our HTTP server
@@ -287,7 +287,7 @@ def run_vm(qemu_cmd, vm_name, ssh_port, cloud_init_server=None):
 
         # Give the process a moment to start
         time.sleep(1)
-        
+
         # Check if process started successfully
         poll_result = process.poll()
         if poll_result is not None:
@@ -399,7 +399,7 @@ def parse_args():
     )
 
     subparsers = parser.add_subparsers(
-        dest="command", 
+        dest="command",
         help="Available commands",
         required=True
     )
@@ -412,7 +412,7 @@ def parse_args():
         epilog="""
 examples:
   fastvm run debian                    # Use debian with default arch
-  fastvm run fedora arm64              # Use fedora with arm64 architecture  
+  fastvm run fedora arm64              # Use fedora with arm64 architecture
   fastvm run debian amd64 localvm01    # Use debian, amd64 arch, hostname localvm01
         """,
     )
@@ -430,7 +430,7 @@ examples:
         help="List running fastvm VMs"
     )
 
-    # LS subcommand  
+    # LS subcommand
     ls_parser = subparsers.add_parser(
         "ls",
         help="List all fastvm VMs (running and stopped)"
@@ -451,6 +451,17 @@ examples:
         help="Force deletion without confirmation"
     )
 
+    # UPDATE subcommand
+    update_parser = subparsers.add_parser(
+        "update",
+        help="Check for and download updated cloud images"
+    )
+    update_parser.add_argument(
+        "-d", "--download",
+        action="store_true",
+        help="Automatically download all available updates"
+    )
+
     return parser.parse_args()
 
 
@@ -459,24 +470,24 @@ def get_all_vms():
     data_dir = get_data_dir()
     vm_files = list(data_dir.glob("*.qcow2"))
     vms = []
-    
+
     for vm_file in vm_files:
         vm_name = vm_file.stem  # Remove .qcow2 extension
         # Skip cloud-init server directories
         if not vm_name.endswith("-cloud-init-server"):
             vms.append(vm_name)
-    
+
     return sorted(vms)
 
 
 def is_vm_running(vm_name):
     """Check if a VM is currently running by checking for monitor socket and process."""
     monitor_socket = f"/tmp/qemu-monitor-{vm_name}.sock"
-    
+
     # Check if monitor socket exists
     if not os.path.exists(monitor_socket):
         return False, None
-    
+
     # Try to find QEMU process by searching for VM name in process list
     try:
         result = subprocess.run(
@@ -489,7 +500,7 @@ def is_vm_running(vm_name):
             return True, pids[0]  # Return first PID found
     except Exception:
         pass
-    
+
     return False, None
 
 
@@ -521,10 +532,10 @@ def list_vms():
     if not vms:
         print("No fastvm VMs found.")
         return
-    
+
     print(f"{'VM NAME':<30} {'STATUS':<10} {'PID':<8} {'SSH PORT':<10}")
     print("-" * 60)
-    
+
     for vm_name in vms:
         running, pid = is_vm_running(vm_name)
         if running:
@@ -539,20 +550,20 @@ def list_running_vms():
     """List only running fastvm VMs."""
     vms = get_all_vms()
     running_vms = []
-    
+
     for vm_name in vms:
         running, pid = is_vm_running(vm_name)
         if running:
             ssh_port = get_vm_ssh_port(vm_name)
             running_vms.append((vm_name, pid, ssh_port))
-    
+
     if not running_vms:
         print("No running fastvm VMs found.")
         return
-    
+
     print(f"{'VM NAME':<30} {'PID':<8} {'SSH PORT':<10}")
     print("-" * 50)
-    
+
     for vm_name, pid, ssh_port in running_vms:
         port_str = str(ssh_port) if ssh_port else "N/A"
         print(f"{vm_name:<30} {pid:<8} {port_str:<10}")
@@ -563,12 +574,12 @@ def delete_vm(vm_name, force=False):
     data_dir = get_data_dir()
     vm_file = data_dir / f"{vm_name}.qcow2"
     cloud_init_dir = data_dir / f"{vm_name}-cloud-init-server"
-    
+
     # Check if VM exists
     if not vm_file.exists():
         print(f"Error: VM '{vm_name}' not found.")
         return False
-    
+
     # Check if VM is running
     running, pid = is_vm_running(vm_name)
     if running:
@@ -577,13 +588,13 @@ def delete_vm(vm_name, force=False):
             if response.lower() not in ['y', 'yes']:
                 print("Deletion cancelled.")
                 return False
-        
+
         # Stop the VM
         try:
             print(f"Stopping VM '{vm_name}' (PID: {pid})...")
             os.kill(int(pid), 15)  # SIGTERM
             time.sleep(2)
-            
+
             # Check if process is still running, force kill if necessary
             if is_vm_running(vm_name)[0]:
                 print("Force killing VM...")
@@ -591,37 +602,187 @@ def delete_vm(vm_name, force=False):
                 time.sleep(1)
         except Exception as e:
             print(f"Warning: Could not stop VM process: {e}")
-    
+
     # Ask for confirmation if not forced
     if not force:
         response = input(f"Delete VM '{vm_name}' and all associated files? (y/N): ")
         if response.lower() not in ['y', 'yes']:
             print("Deletion cancelled.")
             return False
-    
+
     # Delete files
     try:
         print(f"Deleting VM files...")
         if vm_file.exists():
             vm_file.unlink()
             print(f"Deleted: {vm_file}")
-        
+
         if cloud_init_dir.exists():
             shutil.rmtree(cloud_init_dir)
             print(f"Deleted: {cloud_init_dir}")
-        
+
         # Clean up monitor socket
         monitor_socket = f"/tmp/qemu-monitor-{vm_name}.sock"
         if os.path.exists(monitor_socket):
             os.unlink(monitor_socket)
             print(f"Cleaned up monitor socket: {monitor_socket}")
-        
+
         print(f"VM '{vm_name}' deleted successfully.")
         return True
-        
+
     except Exception as e:
         print(f"Error deleting VM: {e}")
         return False
+
+
+def check_image_updates():
+    """Check cached images for available updates (only for distros already in use)."""
+    cache_dir = get_cache_dir()
+    updates_available = []
+
+    # Patterns to identify cached images by distro
+    pattern_prefixes = {
+        'arch': ['Arch', 'arch'],
+        'fedora': ['Fedora', 'fedora'],
+        'debian': ['debian', 'Debian']
+    }
+
+    print(f"Checking cached images for updates...\n")
+
+    # Iterate through all distro/arch combinations in the registry
+    for distro, archs in IMAGES.items():
+        for arch, urls in archs.items():
+            url = urls[0]
+
+            # Find existing cached files for this distro
+            old_files = []
+            if distro in pattern_prefixes:
+                for prefix in pattern_prefixes[distro]:
+                    old_files.extend(cache_dir.glob(f"{prefix}*.qcow2"))
+
+            # Skip if user has never cached this distro
+            if not old_files:
+                continue
+
+            try:
+                # Get remote file information
+                head_response = requests.head(url, allow_redirects=True, timeout=10)
+                head_response.raise_for_status()
+
+                remote_filename = get_filename_from_response(head_response, url)
+                remote_size = int(head_response.headers.get("content-length", 0))
+                last_modified = head_response.headers.get("last-modified")
+
+                cached_file = cache_dir / remote_filename
+
+                if cached_file.exists():
+                    # Current version is cached, check if remote is newer
+                    cached_size = cached_file.stat().st_size
+                    cached_mtime = cached_file.stat().st_mtime
+
+                    update_available = False
+                    update_reason = ""
+
+                    if remote_size > 0 and remote_size != cached_size:
+                        update_available = True
+                        update_reason = f"Size changed: {cached_size} -> {remote_size} bytes"
+                    elif last_modified:
+                        try:
+                            from email.utils import parsedate_to_datetime
+                            remote_mtime = parsedate_to_datetime(last_modified).timestamp()
+                            if remote_mtime > cached_mtime:
+                                update_available = True
+                                update_reason = "Remote file is newer"
+                        except Exception:
+                            pass
+
+                    if update_available:
+                        print(f"  {remote_filename}")
+                        print(f"    Distro: {distro} ({arch})")
+                        print(f"    Reason: {update_reason}")
+                        updates_available.append({
+                            'filename': remote_filename,
+                            'distro': distro,
+                            'arch': arch,
+                            'url': url,
+                            'cached_path': cached_file,
+                            'reason': update_reason,
+                            'old_files': []
+                        })
+                    else:
+                        print(f"  {remote_filename}")
+                        print(f"    Distro: {distro} ({arch})")
+                        print(f"    Status: Up to date")
+                else:
+                    # New version available (filename changed), old version(s) cached
+                    old_file_names = [f.name for f in old_files]
+                    print(f"  {remote_filename}")
+                    print(f"    Distro: {distro} ({arch})")
+                    print(f"    Reason: New version available")
+                    print(f"    Old cached: {', '.join(old_file_names)}")
+                    updates_available.append({
+                        'filename': remote_filename,
+                        'distro': distro,
+                        'arch': arch,
+                        'url': url,
+                        'cached_path': None,
+                        'reason': 'New version available',
+                        'old_files': list(old_files)
+                    })
+
+                print()
+
+            except requests.RequestException as e:
+                print(f"  {distro} ({arch})")
+                print(f"    Error checking: {e}")
+                print()
+
+    return updates_available
+
+
+def update_images_command(args):
+    """Handle the 'update' subcommand."""
+    updates = check_image_updates()
+
+    if not updates:
+        print("All cached images are up to date!")
+        return 0
+
+    print(f"\n{'='*60}")
+    print(f"Found {len(updates)} image(s) with available updates")
+    print(f"{'='*60}\n")
+
+    # If --download flag is set, download all updates
+    if args.download:
+        print("Downloading updates...\n")
+        cache_dir = get_cache_dir()
+
+        for update in updates:
+            print(f"Processing {update['distro']} ({update['arch']})...")
+
+            # Remove old cached file if it exists
+            if update['cached_path']:
+                update['cached_path'].unlink()
+                print(f"  Removed old version: {update['cached_path'].name}")
+
+            # Remove any other old version files for this distro/arch
+            for old_file in update.get('old_files', []):
+                old_file.unlink()
+                print(f"  Removed old version: {old_file.name}")
+
+            # Download new version
+            new_path = download_image(update['url'], cache_dir)
+            if new_path:
+                print(f"✓ Successfully downloaded {update['filename']}\n")
+            else:
+                print(f"✗ Failed to download {update['filename']}\n")
+
+        print("Update complete!")
+        return 0
+    else:
+        print("To download these updates, run:")
+        print("  fastvm update --download")
+        return 0
 
 
 def run_vm_command(args):
@@ -703,6 +864,8 @@ def main():
     elif args.command == "rm":
         success = delete_vm(args.vm_name, args.force)
         return 0 if success else 1
+    elif args.command == "update":
+        return update_images_command(args)
     else:
         print(f"Unknown command: {args.command}")
         return 1
